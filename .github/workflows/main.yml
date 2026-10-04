@@ -1,7 +1,8 @@
-name: DB tests
+name: Tests
 
-# Runs the schema, seed and SQL tests against a throwaway Postgres on every
-# push. No local machine needed: open the Actions tab in GitHub to see results.
+# Runs on every push. Two independent checks:
+#   db  - applies the SQL to a throwaway Postgres and runs the SQL tests
+#   app - typechecks the TypeScript and runs the unit tests
 
 on:
   push:
@@ -52,3 +53,22 @@ jobs:
 
       - name: Phase 2 engine tests
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/phase2_engine.sql
+
+  app:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install packages
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
