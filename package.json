@@ -1,0 +1,17 @@
+{
+  "name": "whatsapp-clerk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.0"
+  }
+}
