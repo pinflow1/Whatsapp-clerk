@@ -1,61 +1,33 @@
-name: Tests
+name: Live model check
 
-# Runs on every push. Two independent checks:
-#   db  - applies the SQL to a throwaway Postgres and runs the SQL tests
-#   app - typechecks the TypeScript and runs the unit tests
+# Manual only: Actions -> "Live model check" -> Run workflow.
+# Sends test messages to the real Gemini and Groq APIs using your repository secrets
+# GEMINI_API_KEY and GROQ_API_KEY, and writes a pass/fail summary on the run's page.
+# It never runs on a normal push, so it does not use up your API quota.
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Which model to test"
+        type: choice
+        options:
+          - both
+          - gemini
+          - groq
+        default: both
+      suite:
+        description: "spec = your 12 messages (fast). all = 38 messages"
+        type: choice
+        options:
+          - spec
+          - all
+        default: spec
 
 jobs:
-  db:
+  live:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      PGHOST: localhost
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: postgres
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # Supabase provides these roles; plain Postgres does not.
-      - name: Create Supabase-style roles
-        run: psql -v ON_ERROR_STOP=1 -c "create role anon nologin; create role authenticated nologin;"
-
-      - name: Apply migrations
-        run: |
-          for f in supabase/migrations/*.sql; do
-            echo "== $f"
-            psql -v ON_ERROR_STOP=1 -f "$f"
-          done
-
-      - name: Load seed data
-        run: psql -v ON_ERROR_STOP=1 -f supabase/seed.sql
-
-      - name: Phase 1 checks
-        run: psql -v ON_ERROR_STOP=1 -f supabase/verify_phase1.sql
-
-      - name: Phase 2 engine tests
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/phase2_engine.sql
-
-  app:
-    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -67,8 +39,10 @@ jobs:
       - name: Install packages
         run: npm install --no-audit --no-fund
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm test
+      - name: Run the live check
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          EVAL_PROVIDERS: ${{ inputs.providers }}
+          EVAL_SUITE: ${{ inputs.suite }}
+        run: npx tsx tests/live/run.ts
