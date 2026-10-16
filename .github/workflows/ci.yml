@@ -1,0 +1,91 @@
+# The CI check: runs on every push, and can be started by hand (Actions > CI > Run workflow).
+# The database checks and the app checks are separate jobs, so one failing never hides the other.
+# This file is called ci.yml on purpose: main.yml in this repo is the Live model check.
+#
+# New SQL files are picked up automatically:
+#   supabase/migrations/*.sql  applied in name order (001, 002, 003, ...)
+#   supabase/tests/*.sql       each one must finish with a line that says "passed"
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  db:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the Supabase roles
+        run: psql -v ON_ERROR_STOP=1 -q -c "create role anon nologin" -c "create role authenticated nologin"
+
+      - name: Apply migrations
+        run: |
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No .sql files found in supabase/migrations/. Check the folder name."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "== $f"
+            psql -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      - name: Load seed data
+        run: psql -v ON_ERROR_STOP=1 -q -f supabase/seed.sql
+
+      - name: Phase 1 checks
+        run: psql -v ON_ERROR_STOP=1 -q -t -A -f supabase/verify_phase1.sql
+
+      - name: SQL tests
+        run: |
+          shopt -s nullglob
+          files=(supabase/tests/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No .sql files found in supabase/tests/. Check the folder name."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "== $f"
+            out=$(psql -v ON_ERROR_STOP=1 -q -t -A -f "$f")
+            echo "$out"
+            if ! echo "$out" | tail -n 1 | grep -q "passed"; then
+              echo "::error::$f did not end with a 'passed' line. Is the file complete?"
+              exit 1
+            fi
+          done
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
