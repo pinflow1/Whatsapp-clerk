@@ -1,115 +1,119 @@
 # WhatsApp Business Clerk
 
-A WhatsApp-first sales and inventory clerk. Staff message in plain language
-("White paper 100 sold for 80k"); the system records the sale, updates stock,
-flags low stock and reports to the owner.
+A clerk for a small shop that lives in WhatsApp. Staff type what they sold
+("White paper 100 sold for 80k"). It records the sale, takes it off the stock,
+warns when something runs low, and reports to the owner. The owner can ask
+questions in plain words ("how much did we make yesterday?").
 
-**Rule of the whole project:** the LLM only turns messages into structured JSON.
-Validation, business logic and the database decide everything about money and stock.
+**The rule of the whole project:** the AI only turns a message into structured
+JSON. It never writes to the database and never makes up a number. Code checks
+everything, and Postgres functions make every change to money and stock, each
+one all-or-nothing.
 
-## Stack
+## How one message travels
 
-Next.js (App Router, TypeScript) · Supabase Postgres · Vercel · Gemini or Groq (swappable)
+1. WhatsApp (Meta) posts it to `/api/whatsapp`. The signature is checked first;
+   anything not signed by Meta is refused.
+2. `claim_inbound` makes sure each message is handled at most once, even if Meta
+   delivers it twice.
+3. The sender's number is looked up in `users`. Strangers get a polite refusal.
+4. If the person was in the middle of a question ("which product?"), their
+   message is treated as the answer.
+5. Otherwise the AI reads it into JSON. Code then checks the product, the
+   quantity, the stock, a price far from usual, and a repeat of the same sale.
+6. A Postgres function records the change. The reply is built from the database's
+   answer, not from the AI's.
+7. The reply is sent back through Meta. The `outbound_messages` table records
+   what really happened ("sent" only when Meta gave back a message id).
 
-## Project structure (target)
+## Who may do what
+
+| | Staff | Owner (admin) |
+|---|---|---|
+| Record a sale | yes | yes |
+| Fix or undo a sale | their own, within 24 hours | any sale |
+| Stock, prices, low stock, restock list | yes | yes |
+| Sales reports | their own only | everyone's, or one person's |
+
+Fixing or undoing always shows what will happen and waits for YES.
+
+## Honest limits (read these)
+
+- **Nothing is sent on a schedule.** The daily report text exists, but there is no
+  timer, and WhatsApp only allows free text within 24 hours of the person's last
+  message. A morning report needs an approved Meta template.
+- Marking restock items as ordered or received by chat is not wired up yet.
+- There is no admin dashboard. Products and staff are changed in the Supabase SQL Editor.
+- Meta's test number only messages people you add by hand, and its temporary
+  token expires within a day. Use a system-user token for anything lasting.
+- Two messages from the same person sent at the very same moment can race.
+- A question the clerk is waiting on expires after 10 minutes.
+- Vercel's free Hobby plan is for non-commercial use. A shop in daily use needs Pro.
+
+## Setup (all doable from a phone)
+
+1. **Supabase → SQL Editor.** Run, in this order, each pasted whole:
+   `001_core_schema.sql`, `002_engine_functions.sql`, `003_reports.sql`,
+   `004_messaging.sql`. Test data only: `seed.sql`.
+2. **Your own number.** Make yourself the owner so the clerk answers you:
+   `update users set phone = '+234XXXXXXXXXX' where name = 'Owner';`
+3. **Vercel.** Import the GitHub repo (Next.js is detected). Add the settings below.
+4. **Try it without WhatsApp.** Set `CHAT_PASSCODE` (10+ characters), redeploy,
+   open `https://YOUR-DOMAIN/chat.html`. It talks to the real database.
+5. **Meta.** developers.facebook.com → create an app → add WhatsApp. Callback URL
+   `https://YOUR-DOMAIN/api/whatsapp`, verify token = `WHATSAPP_VERIFY_TOKEN`,
+   subscribe to `messages`. Add your number as a test recipient, then message the
+   test number first.
+
+| Setting (Vercel → Environment Variables) | What it is |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Your Supabase project. The key stays on the server. |
+| `LLM_PROVIDER` | `gemini` or `groq` |
+| `GEMINI_API_KEY` or `GROQ_API_KEY` | Key for the one you chose |
+| `GEMINI_MODEL` / `GROQ_MODEL`, `LLM_TIMEOUT_MS` | Optional |
+| `WHATSAPP_VERIFY_TOKEN` | Any secret word you invent; paste the same one into Meta |
+| `WHATSAPP_APP_SECRET` | Meta app → Settings → Basic → App secret |
+| `WHATSAPP_ACCESS_TOKEN` | Meta token (system-user token for lasting use) |
+| `WHATSAPP_PHONE_NUMBER_ID` | From Meta's API setup page |
+| `WHATSAPP_GRAPH_VERSION` | Optional, default `v23.0` |
+| `CHAT_PASSCODE` | Optional. Leave unset to switch the test page off. |
+
+## Where things are
 
 ```
-whatsapp-clerk/
-├── supabase/
-│   ├── migrations/001_core_schema.sql   ← Phase 1
-│   ├── migrations/002_engine_functions.sql ← Phase 2: atomic sale/correct/reverse/adjust
-│   ├── seed.sql                         ← Phase 1 (test data only)
-│   ├── verify_phase1.sql                ← Phase 1 checks
-│   └── tests/phase2_engine.sql          ← Phase 2 checks
-├── .github/workflows/db-tests.yml       ← runs every SQL file on each push
-├── src/
-│   ├── lib/
-│   │   ├── db/types.ts                  ← Phase 1 (done)
-│   │   ├── engine/                      ← Phase 2: typed wrappers over the DB functions
-│   │   ├── llm/                         ← Phase 3: LLMProvider, Gemini, Groq
-│   │   ├── nlp/                         ← Phase 4: interpretation, matching, validation
-│   │   ├── reports/                     ← Phase 5-6: reports, restock
-│   │   ├── auth/                        ← Phase 7: roles and permissions
-│   │   └── messaging/                   ← Phase 8-10: MessageProvider, Mock, WhatsApp
-│   └── app/                             ← Phase 9: admin dashboard + API routes
-└── tests/
+supabase/migrations/   001 schema · 002 sale/fix/undo/stock functions · 003 reports · 004 messaging
+supabase/tests/        SQL checks, run by CI; each must end with "passed"
+app/api/whatsapp       Meta's webhook          app/api/chat   the test page's door
+public/chat.html       the test chat page
+src/lib/messaging/     Meta signature, parsing, sending, the webhook logic
+src/lib/clerk/         the clerk: pending questions, sales, fixes, questions, permissions
+src/lib/nlp/           the AI prompt, JSON contract, product matching, sale checks
+src/lib/reports/       report queries, wording, delivery
+src/lib/engine/        typed wrappers over the database functions
+src/lib/llm/           Gemini and Groq behind one interface
+tests/                 unit tests; tests/live grades the real models
+MANIFEST.txt           every file and how many lines it should have
 ```
+
+## Checks that run on every push (GitHub → Actions → CI)
+
+- **db** applies every migration to a fresh Postgres, loads the seed and runs all SQL tests.
+- **app** typechecks, runs the unit tests and builds the site.
+- **files** says in plain words if a file is missing or cut off (compares with `MANIFEST.txt`).
+- The separate *Live model check* sends real messages to Gemini/Groq and scores them.
 
 ## Schema at a glance
 
 | Table | Purpose |
 |---|---|
-| `settings` | One row: `allow_negative_stock` (default off), business timezone |
+| `settings` | One row: `allow_negative_stock` (off by default), business timezone |
 | `users` | Staff and admins, matched by WhatsApp number |
-| `products` | Name, SKU, stock, low-stock threshold, default price. Archived, never deleted |
-| `product_aliases` | Short names like "wp" → White Paper |
-| `sales` / `sale_items` | One sale, one or more line items, with original message and status |
+| `products`, `product_aliases` | Name, stock, low-stock level, price; short names like "wp" |
+| `sales`, `sale_items` | A sale and its lines, with the original message and status |
 | `inventory_transactions` | Append-only stock ledger; every stock change has a row |
-| `restock_items` | Open restock list; a product can appear only once while open |
-| `audit_logs` | Append-only trail: who, what, original message, before/after |
+| `restock_items` | Open restock list; a product appears once while open |
+| `audit_logs` | Append-only trail: who, what, the original message, before and after |
+| `inbound_messages`, `pending_questions`, `outbound_messages` | What arrived, what the clerk is waiting on, what was sent and whether it really went |
 
-Safety built into the database itself: stock can't go negative (unless an admin
-enables it), the ledger and audit log can't be edited, and a product can't be
-added to the restock list twice. All tables are locked from the public API; only
-the server's service role key can read or write.
-
-## Applying Phase 1 (from your phone)
-
-1. Create a **new Supabase project** for this business. Don't reuse a project that
-   has other apps; table names like `users` and `sales` could clash.
-2. Supabase → SQL Editor → paste `001_core_schema.sql` → Run.
-3. Paste `seed.sql` → Run.
-4. Paste `verify_phase1.sql` → Run. You want to see `all checks passed`.
-   Any error starting with `FAIL:` tells you which rule broke.
-
-> The schema was written without a Postgres available to test against, so step 4
-> is the real test. If any step errors, send me the exact message and I'll fix it.
-
-## Phase 2: the engine
-
-Every money or stock change goes through one of four Postgres functions, each
-running as a single transaction (all of it happens, or none of it):
-
-| Function | What it does |
-|---|---|
-| `record_sale` | One or more items; checks everything first, then writes sale, items, stock, ledger, audit; reports low stock |
-| `correct_sale_item` | Edits a sale line in place (quantity, amount, or both); never creates a second sale |
-| `reverse_sale` | Puts all units back, marks the sale reversed, keeps the record |
-| `adjust_stock` | Manual change (miscount, damage); a reason is mandatory |
-
-Each returns `{ ok: true, ... }` or `{ ok: false, error: { code, message, details } }`.
-Codes: `INVALID_INPUT`, `INVALID_QUANTITY`, `INVALID_AMOUNT`, `PRODUCT_NOT_FOUND`,
-`INSUFFICIENT_STOCK`, `USER_NOT_FOUND`, `SALE_NOT_FOUND`, `SALE_ALREADY_REVERSED`,
-`NO_CHANGE`. The app wrapper adds `INTERNAL_ERROR` for unexpected faults.
-
-Decisions worth knowing:
-- If a correction changes only the quantity, the amount is **not** recalculated.
-  The result says `needs_amount_review: true` so the bot can ask "keep ₦80,000 or change it?"
-- Reversed sales stay in the tables. **Reports (Phase 5) must count only `status = 'recorded'`.**
-- Correcting or reversing a sale can lift stock back above the threshold, but the
-  product stays on the restock list until someone marks it (Phase 6).
-- These functions don't check roles. They trust the server calling them. Who may
-  undo or correct what is decided in Phase 7.
-- Add `@supabase/supabase-js` to `package.json` when the Next.js app is scaffolded,
-  and set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Vercel. Never expose the key to the browser.
-
-### Running the tests
-
-- **Automatically:** push to GitHub, then open the repo's **Actions** tab. The
-  "DB tests" run applies every migration, loads the seed and runs both test files.
-- **By hand:** in the Supabase SQL Editor run `002_engine_functions.sql`, then
-  `tests/phase2_engine.sql`. You want `all phase 2 checks passed`. The tests roll
-  back their own data, so they leave your seed untouched.
-
-## Phases
-
-- [x] 1. Database + models + seed data
-- [~] 2. Sales + inventory engine (written; not yet run: confirm the tests pass)
-- [ ] 3. LLM structured-output layer
-- [ ] 4. Natural-language interpretation + validation
-- [ ] 5. Reports
-- [ ] 6. Restock system
-- [ ] 7. Staff/admin permissions
-- [ ] 8. Mock messaging adapter
-- [ ] 9. Admin dashboard
-- [ ] 10. WhatsApp integration boundary
+Stock cannot go negative unless an admin allows it, the ledger and audit log cannot
+be edited, and every table is closed to the public API: only the server key opens them.
