@@ -91,6 +91,7 @@ export const PROMPT_EXAMPLES: PromptExample[] = [
   { message: "cancel my last sale", output: { intent: "undo_sale", product_text: null } },
   { message: "reverse the brown paper sale", output: { intent: "undo_sale", product_text: "brown paper" } },
   { message: "how many ribbon are left?", output: { intent: "query_stock", product_text: "ribbon" } },
+  { message: "what is the price of ribbon", output: { intent: "query_stock", product_text: "ribbon" } },
   { message: "which items are running low", output: { intent: "query_low_stock" } },
   { message: "what should we restock", output: { intent: "query_restock_list" } },
   {
@@ -142,6 +143,18 @@ export const PROMPT_EXAMPLES: PromptExample[] = [
     },
   },
   {
+    message: "how much have I sold this month",
+    output: {
+      intent: "query_sales",
+      period: "this_month",
+      date: null,
+      metric: "revenue",
+      product_text: null,
+      staff_text: "me",
+      group_by: "none",
+    },
+  },
+  {
     message: "floral received, 200 pieces",
     output: { intent: "update_restock", product_text: "floral", status: "received", quantity: 200 },
   },
@@ -188,7 +201,8 @@ HOW TO FILL THEM
 - "another 50 white paper" is a new sale of 50. Do not infer an amount.
 - correct_sale: the person fixes their previous sale ("actually", "sorry", "make it", "not 100"). product_text null means their latest sale. old_quantity is the wrong number they mention.
 - undo_sale: undo, cancel, reverse or delete a sale. product_text null means their latest sale.
-- query_sales: questions about money or sales. "how much did we make" is revenue, "how many ... sold" is units, "by staff" is group_by staff. staff_text is a person's name. For a named date use period "date" and write the date in "date"; if the year is not stated use the current year, or last year if that date is still in the future.
+- query_stock: how many of a product are left. A question about what a product costs ("how much is floral", "price of ribbon") is also query_stock with that product, never query_sales.
+- query_sales: questions about money or sales. "how much did we make" is revenue, "how many ... sold" is units, "by staff" is group_by staff. staff_text is a person's name; when the person asks about their own sales ("my sales", "how much did I sell") write "me". For a named date use period "date" and write the date in "date"; if the year is not stated use the current year, or last year if that date is still in the future.
 - update_restock: marking a restock item pending, ordered or received (with the quantity if given).
 - unknown: greetings, thanks, or anything not about the shop's stock and sales.
 
@@ -241,4 +255,4 @@ export async function interpretMessage(
     interpretation: r.value,
     llm: { provider: r.provider, model: r.model, latencyMs: r.latencyMs, attempts: r.attempts },
   };
-}
+   }
